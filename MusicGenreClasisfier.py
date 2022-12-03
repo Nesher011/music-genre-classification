@@ -1,174 +1,87 @@
-import os
-import json
+from python_speech_features import mfcc
+import scipy.io.wavfile as wav
 import numpy as np
-import librosa
-import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
-import tensorflow as tf
+from tempfile import TemporaryFile
+import os
+import pickle
+import random 
+import operator
+import math
+import numpy as np
 
-# Dataset location
-SOURCE_PATH = 'Dataset/genres_original/'
+def getNeighbors(trainingSet, instance, k):
+    distances = []
+    for x in range (len(trainingSet)):
+        dist = distance(trainingSet[x], instance, k )+ distance(instance, trainingSet[x], k)
+        distances.append((trainingSet[x][2], dist))
+    distances.sort(key=operator.itemgetter(1))
+    neighbors = []
+    for x in range(k):
+        neighbors.append(distances[x][0])
+    return neighbors
 
-# Path to labels and processed data file, json format.
-JSON_PATH = 'data.json'
+def nearestClass(neighbors):
+    classVote = {}
 
-# Sampling rate.
-sr = 22050
+    for x in range(len(neighbors)):
+        response = neighbors[x]
+        if response in classVote:
+            classVote[response]+=1 
+        else:
+            classVote[response]=1
 
-# Let's make sure all files have the same amount of samples, pick a duration right under 30 seconds.
-TOTAL_SAMPLES = 29 * sr
+    sorter = sorted(classVote.items(), key = operator.itemgetter(1), reverse=True)
+    return sorter[0][0]
 
-# The dataset contains 999 files. Lets make it bigger. 
-# X amount of slices => X times more training examples.
-NUM_SLICES = 10
-SAMPLES_PER_SLICE = int(TOTAL_SAMPLES / NUM_SLICES)
+def getAccuracy(testSet, predictions):
+    correct = 0 
+    for x in range (len(testSet)):
+        if testSet[x][-1]==predictions[x]:
+            correct+=1
+    return 1.0*correct/len(testSet)
 
-def preprocess_data(source_path, json_path):
+directory = "Data/genres_original/"
+f= open("my.dat" ,'wb')
+i=0
 
-    # Let's create a dictionary of labels and processed data.
-    mydict = {
-        "labels": [],
-        "mfcc": []
-        }
+for folder in os.listdir(directory):
+    i+=1
+    if i==11 :
+        break   
+    for file in os.listdir(directory+folder):  
+        (rate,sig) = wav.read(directory+folder+"/"+file)
+        mfcc_feat = mfcc(sig,rate ,winlen=0.020, appendEnergy = False)
+        covariance = np.cov(np.matrix.transpose(mfcc_feat))
+        mean_matrix = mfcc_feat.mean(0)
+        feature = (mean_matrix , covariance , i)
+        pickle.dump(feature , f)
 
-    # Let's browse each file, slice it and generate the 13 band mfcc for each slice.
-    for i, (dirpath, dirnames, filenames) in enumerate(os.walk(source_path)):
+f.close()
 
-        for file in filenames:
-            song, sr = librosa.load(os.path.join(dirpath, file), duration=29)
+dataset = []
+def loadDataset(filename , split , trSet , teSet):
+    with open("my.dat" , 'rb') as f:
+        while True:
+            try:
+                dataset.append(pickle.load(f))
+            except EOFError:
+                f.close()
+                break  
 
-            for s in range(NUM_SLICES):
-                start_sample = SAMPLES_PER_SLICE * s
-                end_sample = start_sample + SAMPLES_PER_SLICE
-                mfcc = librosa.feature.mfcc(y=song[start_sample:end_sample], sr=sr, n_mfcc=13)
-                mfcc = mfcc.T
-                mydict["labels"].append(i-1)
-                mydict["mfcc"].append(mfcc.tolist())
+    for x in range(len(dataset)):
+        if random.random() <split :      
+            trSet.append(dataset[x])
+        else:
+            teSet.append(dataset[x])  
 
-    # Let's write the dictionary in a json file.    
-    with open(json_path, 'w') as f:
-        json.dump(mydict, f)
-    f.close()
+trainingSet = []
+testSet = []
+loadDataset("my.dat" , 0.66, trainingSet, testSet)
 
-def load_data(json_path):
+leng = len(testSet)
+predictions = []
+for x in range (leng):
+    predictions.append(nearestClass(getNeighbors(trainingSet ,testSet[x] , 5))) 
 
-    with open(json_path, 'r') as f:
-        data = json.load(f)
-    f.close()
-
-    # Let's load our data into numpy arrays for TensorFlow compatibility.
-    X = np.array(data["mfcc"])
-    y = np.array(data["labels"])
-    print(X.shape)
-
-    return X, y
-
-def prepare_datasets(inputs, targets, split_size):
-    
-    # Creating a validation set and a test set.
-    inputs_train, inputs_val, targets_train, targets_val = train_test_split(inputs, targets, test_size=split_size)
-    inputs_train, inputs_test, targets_train, targets_test = train_test_split(inputs_train, targets_train, test_size=split_size)
-    
-    # Our CNN model expects 3D input shape.
-    inputs_train = inputs_train[..., np.newaxis]
-    inputs_val = inputs_val[..., np.newaxis]
-    inputs_test = inputs_test[..., np.newaxis]
-    
-    return inputs_train, inputs_val, inputs_test, targets_train, targets_val, targets_test
-
-def design_model(input_shape):
-
-    # Let's design the model architecture.
-    model = tf.keras.models.Sequential([
-        
-        tf.keras.layers.Conv2D(32, (3,3), activation='relu', input_shape=input_shape),
-        tf.keras.layers.MaxPooling2D((3,3), strides=(2,2), padding='same'),
-        tf.keras.layers.BatchNormalization(),
-        
-        tf.keras.layers.Conv2D(32, (3,3), activation='relu'),
-        tf.keras.layers.MaxPooling2D((3,3), strides=(2,2), padding='same'),
-        tf.keras.layers.BatchNormalization(),
-        
-        tf.keras.layers.Conv2D(32, (2,2), activation='relu'),
-        tf.keras.layers.MaxPooling2D((3,3), strides=(2,2), padding='same'),
-        tf.keras.layers.BatchNormalization(),
-        tf.keras.layers.Dropout(0.3),
-        
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(64, activation='relu'), 
-        tf.keras.layers.Dense(len(np.unique(targets)), activation='softmax')
-    ])
-
-    return model
-def make_prediction(model, X, y, idx):
-    
-    genre_dict = {
-        0 : "blues",
-        1 : "classical",
-        2 : "country",
-        3 : "disco",
-        4 : "hiphop",
-        5 : "jazz",
-        6 : "metal",
-        7 : "pop",
-        8 : "reggae",
-        9 : "rock",
-        }
-        
-    predictions = model.predict(X)
-    genre = np.argmax(predictions[idx])
-    
-    print("\n---Now testing the model for one audio file---\nThe model predicts: {}, and ground truth is: {}.\n".format(genre_dict[genre], genre_dict[y[idx]]))
-
-def plot_performance(hist):
-    
-    acc = hist.history['acc']
-    val_acc = hist.history['val_acc']
-    loss = hist.history['loss']
-    val_loss = hist.history['val_loss']
-
-    epochs = range(len(acc))
-
-    plt.plot(epochs, acc, 'r', label='Training accuracy')
-    plt.plot(epochs, val_acc, 'b', label='Validation accuracy')
-    plt.title('Training and validation accuracy')
-    plt.legend()
-    plt.figure()
-
-    plt.plot(epochs, loss, 'r', label='Training Loss')
-    plt.plot(epochs, val_loss, 'b', label='Validation Loss')
-    plt.title('Training and validation loss')
-    plt.legend()
-
-    plt.show()
-
-if __name__ == "__main__":
-
-    preprocess_data(source_path=SOURCE_PATH, json_path=JSON_PATH)
-    
-    inputs, targets = load_data(json_path=JSON_PATH)
-        
-    Xtrain, Xval, Xtest, ytrain, yval, ytest = prepare_datasets(inputs, targets, 0.2)
-
-    input_shape = (Xtrain.shape[1], Xtrain.shape[2], 1)
-    model = design_model(input_shape)
-
-    # Selection of the optimizer, loss type and metrics for performance evaluation.
-    model.compile(optimizer = tf.keras.optimizers.RMSprop(lr=0.001),
-                     loss='sparse_categorical_crossentropy',
-                     metrics = ['acc']
-                     )
-
-    model.summary()
-
-    # Training the model.
-    history = model.fit(Xtrain, ytrain,
-                        validation_data=(Xval, yval),
-                        epochs=30,
-                        batch_size=32
-                        )
-
-    plot_performance(history)
-
-    # Testing the model on never seen before data.
-    make_prediction(model, Xtest, ytest, 24)
+accuracy1 = getAccuracy(testSet , predictions)
+print(accuracy1)
