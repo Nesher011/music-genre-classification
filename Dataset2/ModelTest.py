@@ -61,7 +61,7 @@ def nearestClass(neighbors):
 results=defaultdict(int)
 
 i=1
-for folder in os.listdir("./Data/genres/"):
+for folder in os.listdir("Dataset2/Data/genres/"):
     results[i]=folder
     i+=1
 

@@ -8,8 +8,23 @@ import random
 import operator
 import math
 import numpy as np
+import librosa
 
 import ModelTest
+
+import pydub 
+import numpy as np
+
+def read(f, normalized=False):
+    """MP3 to numpy array"""
+    a = pydub.AudioSegment.from_mp3(f)
+    y = np.array(a.get_array_of_samples())
+    if a.channels == 2:
+        y = y.reshape((-1, 2))
+    if normalized:
+        return a.frame_rate, np.float32(y) / 2**15
+    else:
+        return a.frame_rate, y
 
 def getNeighbors(trainingSet, instance, k):
     distances = []
@@ -42,7 +57,7 @@ def getAccuracy(testSet, predictions):
             correct+=1
     return 1.0*correct/len(testSet)
 
-directory = "Data/genres/"
+directory = "Dataset2/Data/genres/"
 f= open("my.dat" ,'wb')
 i=0
 
@@ -51,7 +66,8 @@ for folder in os.listdir(directory):
     if i==11 :
         break   
     for file in os.listdir(directory+folder):  
-        (rate,sig) = wav.read(directory+folder+"/"+file)
+        (rate,sig)=read(directory+folder+"/"+file)
+        #(rate,sig) = wav.read(directory+folder+"/"+file)
         mfcc_feat = mfcc(sig,rate ,winlen=0.020, appendEnergy = False)
         covariance = np.cov(np.matrix.transpose(mfcc_feat))
         mean_matrix = mfcc_feat.mean(0)
